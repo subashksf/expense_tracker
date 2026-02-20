@@ -1,16 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
 import {
   createCategory,
   createClassificationRule,
   createManualTransaction,
   deleteClassificationRule,
+  fetchDuplicateReviews,
   fetchInsight,
   fetchCategories,
   fetchClassificationRules,
   fetchImport,
+  loadClassificationRulesConfig,
   recategorizeTransactions,
+  resolveDuplicateReview,
+  resolveDuplicateReviewsBulk,
+  saveClassificationRulesConfig,
+  setApiAccessTokenProvider,
   fetchTransactions,
   generateInsights,
   updateClassificationRule,
@@ -20,6 +27,7 @@ import {
 import type {
   ClassificationRule,
   ClassificationRuleType,
+  DuplicateReview,
   InsightReport,
   StatementImport,
   Transaction
@@ -57,6 +65,7 @@ function toRuleDraft(rule: ClassificationRule): RuleDraft {
 }
 
 export default function HomePage() {
+  const { getToken, isLoaded, isSignedIn } = useAuth();
   const [activeTab, setActiveTab] = useState<TabId>("transactions");
   const [file, setFile] = useState<File | null>(null);
   const [importInfo, setImportInfo] = useState<StatementImport | null>(null);
@@ -80,12 +89,23 @@ export default function HomePage() {
   const [newRuleConfidence, setNewRuleConfidence] = useState("0.9");
   const [newRulePriority, setNewRulePriority] = useState("20");
   const [newRuleActive, setNewRuleActive] = useState(true);
+  const [rulesConfigSyncing, setRulesConfigSyncing] = useState(false);
+  const [rulesConfigMessage, setRulesConfigMessage] = useState("");
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [txError, setTxError] = useState("");
   const [recategorizing, setRecategorizing] = useState(false);
   const [recategorizeMessage, setRecategorizeMessage] = useState("");
+  const [duplicateReviews, setDuplicateReviews] = useState<DuplicateReview[]>([]);
+  const [loadingDuplicateReviews, setLoadingDuplicateReviews] = useState(false);
+  const [duplicateReviewError, setDuplicateReviewError] = useState("");
+  const [duplicateReviewMessage, setDuplicateReviewMessage] = useState("");
+  const [duplicateReviewActionState, setDuplicateReviewActionState] = useState<Record<string, SaveStatus>>({});
+  const [duplicateBulkResolvingAction, setDuplicateBulkResolvingAction] = useState<"mark_duplicate" | "not_duplicate" | null>(null);
+  const [transactionReviewExpanded, setTransactionReviewExpanded] = useState(false);
+  const [uncategorizedReviewExpanded, setUncategorizedReviewExpanded] = useState(false);
+  const [duplicateReviewExpanded, setDuplicateReviewExpanded] = useState(false);
 
   const [uncategorizedRows, setUncategorizedRows] = useState<Transaction[]>([]);
   const [loadingUncategorized, setLoadingUncategorized] = useState(false);
@@ -213,6 +233,24 @@ export default function HomePage() {
       setLoadingUncategorized(false);
     }
   }, [assignableCategories]);
+
+  const refreshDuplicateReviews = useCallback(async () => {
+    setLoadingDuplicateReviews(true);
+    setDuplicateReviewError("");
+    setDuplicateReviewMessage("");
+    try {
+      const rows = await fetchDuplicateReviews({
+        status: "pending",
+        limit: 500,
+        offset: 0
+      });
+      setDuplicateReviews(rows);
+    } catch (error) {
+      setDuplicateReviewError(error instanceof Error ? error.message : "Failed to load duplicate review queue.");
+    } finally {
+      setLoadingDuplicateReviews(false);
+    }
+  }, []);
 
   async function handleUpload() {
     if (!file) {
@@ -443,6 +481,96 @@ export default function HomePage() {
     }
   }
 
+  async function handleSaveRulesToConfig() {
+    setRuleError("");
+    setRulesConfigMessage("");
+    setRulesConfigSyncing(true);
+    try {
+      const result = await saveClassificationRulesConfig();
+      setRulesConfigMessage(`Saved ${result.exported_rules} rules to ${result.path}.`);
+    } catch (error) {
+      setRuleError(error instanceof Error ? error.message : "Failed to save rules to config file.");
+    } finally {
+      setRulesConfigSyncing(false);
+    }
+  }
+
+  async function handleLoadRulesFromConfig() {
+    setRuleError("");
+    setRulesConfigMessage("");
+    setRulesConfigSyncing(true);
+    try {
+      const result = await loadClassificationRulesConfig(true);
+      setRulesConfigMessage(`Loaded ${result.loaded_rules} rules from ${result.path}.`);
+      await refreshCategories();
+      await refreshClassificationRules();
+    } catch (error) {
+      setRuleError(error instanceof Error ? error.message : "Failed to load rules from config file.");
+    } finally {
+      setRulesConfigSyncing(false);
+    }
+  }
+
+  async function handleResolveDuplicateReview(reviewId: string, action: "mark_duplicate" | "not_duplicate") {
+    setDuplicateReviewError("");
+    setDuplicateReviewMessage("");
+    setDuplicateReviewActionState((prev) => ({ ...prev, [reviewId]: "saving" }));
+    try {
+      const result = await resolveDuplicateReview(reviewId, action);
+      setDuplicateReviews((prev) => prev.filter((row) => row.id !== reviewId));
+      if (result.created_transaction_id) {
+        setDuplicateReviewMessage(`Not Duplicate applied: transaction ${result.created_transaction_id} created.`);
+        await refreshTransactions();
+        await refreshUncategorized();
+      } else {
+        setDuplicateReviewMessage("Marked as duplicate and removed from queue.");
+      }
+      setDuplicateReviewActionState((prev) => ({ ...prev, [reviewId]: "saved" }));
+      setTimeout(() => {
+        setDuplicateReviewActionState((prev) => ({ ...prev, [reviewId]: "idle" }));
+      }, 800);
+    } catch (error) {
+      setDuplicateReviewActionState((prev) => ({ ...prev, [reviewId]: "error" }));
+      setDuplicateReviewError(error instanceof Error ? error.message : "Failed to update duplicate review status.");
+    }
+  }
+
+  async function handleBulkResolveDuplicateReviews(action: "mark_duplicate" | "not_duplicate") {
+    setDuplicateReviewError("");
+    setDuplicateReviewMessage("");
+
+    const reviewIds = duplicateReviews.map((row) => row.id);
+    if (reviewIds.length === 0) {
+      setDuplicateReviewMessage("No duplicate reviews are currently shown.");
+      return;
+    }
+
+    const actionLabel = action === "mark_duplicate" ? "mark all shown as duplicate" : "approve all shown as not duplicate";
+    const confirmed = window.confirm(
+      `This will ${actionLabel} for ${reviewIds.length} rows currently shown. Continue?`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDuplicateBulkResolvingAction(action);
+    try {
+      const result = await resolveDuplicateReviewsBulk(reviewIds, action);
+      setDuplicateReviewMessage(
+        `Bulk action complete. Processed ${result.processed_count}/${result.requested_count}; created ${result.created_transactions_count} transactions; skipped missing ${result.skipped_missing_count}, non-pending ${result.skipped_non_pending_count}.`
+      );
+      await refreshDuplicateReviews();
+      if (result.created_transactions_count > 0) {
+        await refreshTransactions();
+        await refreshUncategorized();
+      }
+    } catch (error) {
+      setDuplicateReviewError(error instanceof Error ? error.message : "Failed to run bulk duplicate review action.");
+    } finally {
+      setDuplicateBulkResolvingAction(null);
+    }
+  }
+
   async function handleGenerateInsights() {
     setGeneratingInsight(true);
     setInsightError("");
@@ -538,12 +666,30 @@ export default function HomePage() {
   }
 
   useEffect(() => {
-    refreshCategories();
-  }, [refreshCategories]);
+    setApiAccessTokenProvider(async () => {
+      if (!isLoaded || !isSignedIn) {
+        return null;
+      }
+      return (await getToken()) ?? null;
+    });
+    return () => setApiAccessTokenProvider(null);
+  }, [getToken, isLoaded, isSignedIn]);
 
   useEffect(() => {
+    if (!isLoaded || !isSignedIn) {
+      setImportInfo(null);
+      setTransactions([]);
+      setUncategorizedRows([]);
+      setDuplicateReviews([]);
+      return;
+    }
+    refreshCategories();
+  }, [isLoaded, isSignedIn, refreshCategories]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
     refreshClassificationRules();
-  }, [refreshClassificationRules]);
+  }, [isLoaded, isSignedIn, refreshClassificationRules]);
 
   useEffect(() => {
     if (!manualCategory && assignableCategories.length > 0) {
@@ -558,14 +704,22 @@ export default function HomePage() {
   }, [assignableCategories, newRuleCategory]);
 
   useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
     refreshTransactions();
-  }, [refreshTransactions]);
+  }, [isLoaded, isSignedIn, refreshTransactions]);
 
   useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
     refreshUncategorized();
-  }, [refreshUncategorized]);
+  }, [isLoaded, isSignedIn, refreshUncategorized]);
 
   useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
+    refreshDuplicateReviews();
+  }, [isLoaded, isSignedIn, refreshDuplicateReviews]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
     if (!importInfo) return;
     if (importInfo.status === "completed" || importInfo.status === "failed") return;
 
@@ -576,6 +730,7 @@ export default function HomePage() {
         if (updated.status === "completed") {
           refreshTransactions();
           refreshUncategorized();
+          refreshDuplicateReviews();
         }
       } catch {
         // best-effort polling
@@ -583,15 +738,35 @@ export default function HomePage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [importInfo, refreshTransactions, refreshUncategorized]);
+  }, [isLoaded, isSignedIn, importInfo, refreshDuplicateReviews, refreshTransactions, refreshUncategorized]);
 
   return (
+    <>
+    <SignedOut>
+      <main className="page">
+        <div className="bg-shape bg-shape-left" />
+        <div className="bg-shape bg-shape-right" />
+        <section className="hero">
+          <h1>Expense Tracker</h1>
+          <p>Sign in to upload statements, review categories, and generate insights.</p>
+          <div className="insight-actions">
+            <SignInButton mode="modal">
+              <button type="button">Sign In</button>
+            </SignInButton>
+          </div>
+        </section>
+      </main>
+    </SignedOut>
+    <SignedIn>
     <main className="page">
       <div className="bg-shape bg-shape-left" />
       <div className="bg-shape bg-shape-right" />
 
       <section className="hero">
-        <h1>Expense Tracker</h1>
+        <div className="card-head">
+          <h1>Expense Tracker</h1>
+          <UserButton afterSignOutUrl="/" />
+        </div>
         <p>Upload statements, review categories, and keep your spend data clean for AI insights.</p>
       </section>
 
@@ -734,7 +909,18 @@ export default function HomePage() {
         <p className="subtle">
           Manage auto-categorization mappings used for future CSV imports. Lower priority runs first.
         </p>
+        <p className="subtle">Rules config file path: <span className="mono">backend/config/classification_rules.json</span></p>
         {ruleError ? <p className="error">{ruleError}</p> : null}
+        {rulesConfigMessage ? <p className="saved-text">{rulesConfigMessage}</p> : null}
+
+        <div className="insight-actions">
+          <button type="button" onClick={handleSaveRulesToConfig} disabled={rulesConfigSyncing}>
+            {rulesConfigSyncing ? "Saving..." : "Save Rules to Config"}
+          </button>
+          <button type="button" onClick={handleLoadRulesFromConfig} disabled={rulesConfigSyncing}>
+            {rulesConfigSyncing ? "Loading..." : "Load Rules from Config"}
+          </button>
+        </div>
 
         <div className="filters">
           <label>
@@ -961,9 +1147,20 @@ export default function HomePage() {
             <button type="button" onClick={refreshTransactions} disabled={loadingTransactions}>
               {loadingTransactions ? "Refreshing..." : "Refresh"}
             </button>
+            <button
+              type="button"
+              onClick={() => setTransactionReviewExpanded((prev) => !prev)}
+            >
+              {transactionReviewExpanded ? "Collapse" : "Expand"}
+            </button>
           </div>
         </div>
+        <p className="subtle">
+          {loadingTransactions ? "Loading transactions..." : `${transactions.length} transactions (current filters)`}
+        </p>
 
+        {transactionReviewExpanded ? (
+        <>
         <div className="filters">
           <label>
             Start
@@ -1051,6 +1248,8 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
+        </>
+        ) : null}
       </section>
       ) : null}
 
@@ -1058,13 +1257,24 @@ export default function HomePage() {
       <section className="card">
         <div className="card-head">
           <h2>Uncategorized Review</h2>
-          <button type="button" onClick={refreshUncategorized} disabled={loadingUncategorized}>
-            {loadingUncategorized ? "Refreshing..." : "Refresh"}
-          </button>
+          <div className="card-head-actions">
+            <button type="button" onClick={refreshUncategorized} disabled={loadingUncategorized}>
+              {loadingUncategorized ? "Refreshing..." : "Refresh"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setUncategorizedReviewExpanded((prev) => !prev)}
+            >
+              {uncategorizedReviewExpanded ? "Collapse" : "Expand"}
+            </button>
+          </div>
         </div>
         <p className="subtle">
-          {loadingCategories ? "Loading categories..." : `${uncategorizedRows.length} uncategorized transactions`}
+          {loadingUncategorized ? "Loading uncategorized..." : `${uncategorizedRows.length} uncategorized transactions`}
         </p>
+        {uncategorizedReviewExpanded ? (
+        <>
+        {loadingCategories ? <p className="subtle">Loading categories...</p> : null}
         {categoryError ? <p className="error">{categoryError}</p> : null}
         {uncategorizedError ? <p className="error">{uncategorizedError}</p> : null}
 
@@ -1150,6 +1360,113 @@ export default function HomePage() {
             </tbody>
           </table>
         </div>
+        </>
+        ) : null}
+      </section>
+      ) : null}
+
+      {activeTab === "transactions" ? (
+      <section className="card">
+        <div className="card-head">
+          <h2>Duplicate Review Queue</h2>
+          <div className="card-head-actions">
+            <button type="button" onClick={refreshDuplicateReviews} disabled={loadingDuplicateReviews}>
+              {loadingDuplicateReviews ? "Refreshing..." : "Refresh"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDuplicateReviewExpanded((prev) => !prev)}
+            >
+              {duplicateReviewExpanded ? "Collapse" : "Expand"}
+            </button>
+          </div>
+        </div>
+        <p className="subtle">
+          {loadingDuplicateReviews ? "Loading duplicate queue..." : `${duplicateReviews.length} pending duplicate reviews`}
+        </p>
+        {duplicateReviewExpanded ? (
+        <>
+        <p className="subtle">
+          Potential duplicates are queued here instead of being silently dropped during import.
+        </p>
+        {duplicateReviewError ? <p className="error">{duplicateReviewError}</p> : null}
+        {duplicateReviewMessage ? <p className="saved-text">{duplicateReviewMessage}</p> : null}
+        <div className="insight-actions">
+          <button
+            type="button"
+            onClick={() => handleBulkResolveDuplicateReviews("mark_duplicate")}
+            disabled={duplicateBulkResolvingAction !== null || duplicateReviews.length === 0}
+          >
+            {duplicateBulkResolvingAction === "mark_duplicate" ? "Processing..." : "Mark all shown duplicate"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleBulkResolveDuplicateReviews("not_duplicate")}
+            disabled={duplicateBulkResolvingAction !== null || duplicateReviews.length === 0}
+          >
+            {duplicateBulkResolvingAction === "not_duplicate" ? "Processing..." : "Approve all shown"}
+          </button>
+        </div>
+
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Import</th>
+                <th>Row</th>
+                <th>Date</th>
+                <th>Merchant</th>
+                <th>Amount</th>
+                <th>Reason</th>
+                <th>Matched Txn</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {duplicateReviews.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="empty">
+                    {loadingDuplicateReviews ? "Loading duplicate queue..." : "No pending duplicate reviews."}
+                  </td>
+                </tr>
+              ) : (
+                duplicateReviews.map((row) => (
+                  <tr key={row.id}>
+                    <td className="mono">{row.source_import_id}</td>
+                    <td>{row.source_row_number}</td>
+                    <td>{row.transaction_date ?? "n/a"}</td>
+                    <td title={row.description_raw}>{row.merchant_normalized}</td>
+                    <td className={row.direction === "debit" ? "amount-debit" : "amount-credit"}>
+                      {row.direction === "debit" ? "-" : "+"}${row.amount.toFixed(2)}
+                    </td>
+                    <td>{row.duplicate_scope}:{row.duplicate_reason}</td>
+                    <td className="mono">{row.matched_transaction_id ?? "n/a"}</td>
+                    <td>
+                      <div className="card-head-actions">
+                        <button
+                          type="button"
+                          onClick={() => handleResolveDuplicateReview(row.id, "mark_duplicate")}
+                          disabled={duplicateReviewActionState[row.id] === "saving" || duplicateBulkResolvingAction !== null}
+                        >
+                          Mark Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResolveDuplicateReview(row.id, "not_duplicate")}
+                          disabled={duplicateReviewActionState[row.id] === "saving" || duplicateBulkResolvingAction !== null}
+                        >
+                          Not Duplicate
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        </>
+        ) : null}
       </section>
       ) : null}
 
@@ -1281,5 +1598,7 @@ export default function HomePage() {
       </section>
       ) : null}
     </main>
+    </SignedIn>
+    </>
   );
 }

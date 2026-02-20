@@ -5,22 +5,25 @@ from .db import engine
 
 def ensure_schema_compatibility() -> None:
     inspector = inspect(engine)
-    try:
-        columns = {column["name"] for column in inspector.get_columns("statement_imports")}
-    except Exception:  # noqa: BLE001
-        return
+    ddl: list[str] = []
 
-    ddl = []
-    if "queue_job_id" not in columns:
-        ddl.append("ALTER TABLE statement_imports ADD COLUMN queue_job_id VARCHAR(64)")
-    if "processing_started_at" not in columns:
-        ddl.append("ALTER TABLE statement_imports ADD COLUMN processing_started_at TIMESTAMP")
-    if "finished_at" not in columns:
-        ddl.append("ALTER TABLE statement_imports ADD COLUMN finished_at TIMESTAMP")
+    def add_if_missing(table_name: str, column_name: str, column_ddl: str) -> None:
+        try:
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+        except Exception:  # noqa: BLE001
+            return
+        if column_name not in columns:
+            ddl.append(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_ddl}")
 
-    if not ddl:
-        return
+    add_if_missing("statement_imports", "queue_job_id", "VARCHAR(64)")
+    add_if_missing("statement_imports", "processing_started_at", "TIMESTAMP")
+    add_if_missing("statement_imports", "finished_at", "TIMESTAMP")
+    add_if_missing("statement_imports", "user_id", "VARCHAR(128)")
+    add_if_missing("transactions", "user_id", "VARCHAR(128)")
+    add_if_missing("insight_reports", "user_id", "VARCHAR(128)")
+    add_if_missing("duplicate_reviews", "user_id", "VARCHAR(128)")
 
-    with engine.begin() as connection:
-        for statement in ddl:
-            connection.execute(text(statement))
+    if ddl:
+        with engine.begin() as connection:
+            for statement in ddl:
+                connection.execute(text(statement))

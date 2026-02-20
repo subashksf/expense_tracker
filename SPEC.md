@@ -38,9 +38,11 @@ Build an application that:
    - Normalize signs and transaction direction.
    - Normalize merchant names (for example: "AMZN Mktp US" -> "Amazon").
    - Deduplicate overlapping transactions across uploads.
+   - Queue potential duplicates for user review instead of silently dropping them.
 3. Categorization
    - Rule-based first pass (source category, merchant, and description/text rules).
    - Rules are configurable (stored in DB and editable via API/UI).
+   - Rules can be exported/imported via git-backed JSON config.
    - ML/LLM fallback for uncertain transactions.
    - Confidence score per classification.
    - Manual recategorization by user.
@@ -78,7 +80,7 @@ Build an application that:
    - Dashboards for spend and trends.
    - AI insights panel.
 2. Backend API
-   - Auth/session (MVP can be simple local auth).
+   - Auth/session (Clerk JWT verification for `/api/*`).
    - File upload endpoint.
    - Transaction/category CRUD.
    - Analytics endpoints.
@@ -107,9 +109,10 @@ Build an application that:
    - Active rules are evaluated by ascending `priority`.
 7. Data persisted and import status marked complete.
 8. User reviews and optionally edits categories.
-9. User requests insight report for date range.
-10. LLM prompt built from aggregates + notable transactions.
-11. Insight report persisted and displayed.
+9. Potential duplicate rows are added to duplicate review queue.
+10. User requests insight report for date range.
+11. LLM prompt built from aggregates + notable transactions.
+12. Insight report persisted and displayed.
 
 ## 8. Data Model (Core Tables)
 1. `users`
@@ -120,8 +123,9 @@ Build an application that:
 6. `categories`
 7. `classification_rules`
 8. `transaction_category_overrides`
-9. `insight_reports`
-10. `insight_feedback`
+9. `duplicate_reviews`
+10. `insight_reports`
+11. `insight_feedback`
 
 ## 9. Canonical Transaction Fields
 1. `id`
@@ -186,11 +190,18 @@ Build an application that:
 10. `POST /api/classification-rules` - create categorization rule
 11. `PATCH /api/classification-rules/:id` - update categorization rule
 12. `DELETE /api/classification-rules/:id` - delete categorization rule
+13. `POST /api/classification-rules/config/save` - export rules to config file
+14. `POST /api/classification-rules/config/load` - load rules from config file
+15. `GET /api/duplicate-reviews` - list duplicate review queue
+16. `PATCH /api/duplicate-reviews/:id` - update duplicate review status
+17. `POST /api/duplicate-reviews/:id/resolve` - resolve queue item (`mark_duplicate` or `not_duplicate`)
+18. `POST /api/duplicate-reviews/bulk-resolve` - bulk resolve shown queue items with safeguards
 
 ## 13. Non-Functional Requirements
 1. Security
    - Encrypt data at rest and in transit.
    - Securely store LLM/API keys.
+   - Validate Clerk JWTs against JWKS and enforce bearer auth when enabled.
 2. Privacy
    - Minimize sending raw transaction rows to LLM when aggregates are enough.
    - Add data-retention controls for uploaded files.
@@ -224,6 +235,7 @@ Build an application that:
 4. Environment strategy:
    - `dev`: local docker-compose
    - `prod`: Render-managed services
+   - Auth provider: Clerk (frontend sign-in + backend JWT verification)
 5. Future option:
    - Consider AWS migration later if scale/compliance/cost profile requires it.
    - Do not optimize for AWS in MVP implementation right now.

@@ -11,6 +11,7 @@ class StatementImport(Base):
     __tablename__ = "statement_imports"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
     queue_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -63,6 +64,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_import_id: Mapped[str] = mapped_column(String(36), ForeignKey("statement_imports.id"), nullable=False)
     transaction_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     description_raw: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -76,10 +78,36 @@ class Transaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class DuplicateReview(Base):
+    __tablename__ = "duplicate_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_import_id: Mapped[str] = mapped_column(String(36), ForeignKey("statement_imports.id"), nullable=False)
+    source_row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    duplicate_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    duplicate_reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    matched_transaction_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("transactions.id"), nullable=True)
+    transaction_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    description_raw: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    merchant_normalized: Mapped[str] = mapped_column(String(255), nullable=False, default="unknown")
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="USD", nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), default="debit", nullable=False)
+    category: Mapped[str] = mapped_column(String(64), default="uncategorized", nullable=False)
+    category_confidence: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    dedupe_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class InsightReport(Base):
     __tablename__ = "insight_reports"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)

@@ -17,6 +17,16 @@ services:
           type: keyvalue
           name: expense-tracker-kv
           property: connectionString
+      - key: CLERK_ENABLED
+        value: "true"
+      - key: CLERK_REQUIRE_AUTH
+        value: "true"
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
+      - key: CLERK_AUDIENCE
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
 

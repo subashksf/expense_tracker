@@ -103,6 +103,60 @@ export type ClassificationRuleUpdateInput = {
   is_active?: boolean;
 };
 
+export type ClassificationRuleConfigSaveResult = {
+  path: string;
+  exported_rules: number;
+};
+
+export type ClassificationRuleConfigLoadResult = {
+  path: string;
+  loaded_rules: number;
+  replaced_existing: boolean;
+};
+
+export type DuplicateReviewStatus = "pending" | "confirmed_duplicate" | "ignored";
+
+export type DuplicateReview = {
+  id: string;
+  source_import_id: string;
+  source_row_number: number;
+  duplicate_scope: string;
+  duplicate_reason: string;
+  matched_transaction_id: string | null;
+  transaction_date: string | null;
+  description_raw: string;
+  merchant_normalized: string;
+  amount: number;
+  currency: string;
+  direction: "debit" | "credit";
+  category: string;
+  category_confidence: number;
+  dedupe_fingerprint: string;
+  status: DuplicateReviewStatus;
+  review_note: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+};
+
+export type DuplicateReviewResolveAction = "mark_duplicate" | "not_duplicate";
+
+export type DuplicateReviewResolveResult = {
+  action: string;
+  status: string;
+  deleted_review_id: string;
+  created_transaction_id: string | null;
+};
+
+export type DuplicateReviewBulkResolveResult = {
+  action: string;
+  requested_count: number;
+  processed_count: number;
+  deleted_reviews_count: number;
+  created_transactions_count: number;
+  skipped_missing_count: number;
+  skipped_non_pending_count: number;
+};
+
 export type InsightTopCategory = {
   category: string;
   amount: number;

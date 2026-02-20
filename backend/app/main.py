@@ -1,30 +1,57 @@
 import json
+import hashlib
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
+import math
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
+from fastapi.responses import JSONResponse, Response
+from sqlalchemy import Numeric, cast, func, select, true
 from sqlalchemy.orm import Session
 
+from .auth import AuthContext, ClerkTokenVerifier, extract_bearer_token
 from .config import cors_origins, settings
 from .db import Base, SessionLocal, engine, get_db
 from .dedupe import build_dedupe_fingerprint
 from .default_rule_seeds import DEFAULT_CLASSIFICATION_RULES
 from .classification_engine import classify_with_rules, load_active_rules
 from .insights import build_spend_insight
-from .models import Category, ClassificationRule, InsightReport, StatementImport, Transaction, UploadedFile
+from .models import (
+    Category,
+    ClassificationRule,
+    DuplicateReview,
+    InsightReport,
+    StatementImport,
+    Transaction,
+    UploadedFile,
+)
 from .queue import enqueue_import, read_job_state
+from .rate_limit import (
+    RedisTokenBucketLimiter,
+    pick_rate_limit_policy,
+    resolve_rate_limit_identity,
+)
+from .rule_config import load_rules_config_file, resolve_rules_config_path, save_rules_config_file
 from .schema import ensure_schema_compatibility
 from .schemas import (
     CategoryCreateRequest,
     CategoryResponse,
     ClassificationRuleCreateRequest,
+    ClassificationRuleConfigLoadRequest,
+    ClassificationRuleConfigLoadResponse,
+    ClassificationRuleConfigSaveResponse,
     ClassificationRuleResponse,
     ClassificationRuleUpdateRequest,
     CategorySpend,
     CategoryUpdateRequest,
+    DuplicateReviewBulkResolveRequest,
+    DuplicateReviewBulkResolveResponse,
+    DuplicateReviewResponse,
+    DuplicateReviewResolveRequest,
+    DuplicateReviewResolveResponse,
+    DuplicateReviewUpdateRequest,
     InsightGenerateRequest,
     InsightReportResponse,
     ManualTransactionCreateRequest,
@@ -61,6 +88,9 @@ ALLOWED_RULE_TYPES = {
     "text_contains",
 }
 
+ALLOWED_DUPLICATE_REVIEW_STATUS = {"pending", "confirmed_duplicate", "ignored"}
+BULK_DUPLICATE_REVIEW_MAX = 500
+
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -70,6 +100,130 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+rate_limiter = RedisTokenBucketLimiter(settings.redis_url, key_prefix=settings.rate_limit_key_prefix)
+token_verifier = ClerkTokenVerifier(settings) if settings.clerk_enabled else None
+
+
+def _get_auth_context(request: Request) -> AuthContext | None:
+    if not settings.clerk_enabled:
+        return None
+    context = getattr(request.state, "auth_context", None)
+    if context is not None:
+        return context
+    if settings.clerk_require_auth:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return None
+
+
+def _get_request_user_id(request: Request) -> str | None:
+    context = _get_auth_context(request)
+    return context.user_id if context else None
+
+
+def _apply_user_scope(query, model, user_id: str | None):
+    if not settings.clerk_enabled:
+        return query
+    if user_id is None:
+        return query.filter(model.user_id.is_(None))
+    return query.filter(model.user_id == user_id)
+
+
+def _build_user_condition(model, user_id: str | None):
+    if not settings.clerk_enabled:
+        return true()
+    if user_id is None:
+        return model.user_id.is_(None)
+    return model.user_id == user_id
+
+
+def _apply_rate_limit_headers(
+    response: Response,
+    limit: int,
+    remaining: float,
+    policy_name: str,
+    retry_after_seconds: int | None = None,
+) -> None:
+    response.headers["X-RateLimit-Limit"] = str(limit)
+    response.headers["X-RateLimit-Remaining"] = str(max(0, int(math.floor(remaining))))
+    response.headers["X-RateLimit-Policy"] = policy_name
+    if retry_after_seconds is not None:
+        response.headers["Retry-After"] = str(max(1, retry_after_seconds))
+
+
+@app.middleware("http")
+async def enforce_authentication(request: Request, call_next):
+    request.state.auth_context = None
+    if not settings.clerk_enabled:
+        return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+    if not request.url.path.startswith(settings.api_prefix):
+        return await call_next(request)
+
+    token = extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        if settings.clerk_require_auth:
+            return JSONResponse(status_code=401, content={"detail": "Missing bearer token"})
+        return await call_next(request)
+
+    try:
+        if token_verifier is None:
+            return JSONResponse(status_code=503, content={"detail": "Clerk is not configured"})
+        request.state.auth_context = token_verifier.verify(token)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def enforce_rate_limit(request: Request, call_next):
+    if not settings.rate_limit_enabled:
+        return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+    if not request.url.path.startswith(settings.api_prefix):
+        return await call_next(request)
+
+    policy = pick_rate_limit_policy(request.method, request.url.path, settings)
+    identity = resolve_rate_limit_identity(request)
+    decision = rate_limiter.consume(policy=policy, identity=identity)
+
+    if decision.error and not settings.rate_limit_fail_open:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Rate limiter unavailable. Try again shortly."},
+        )
+
+    if not decision.allowed:
+        retry_after_seconds = int(max(1, math.ceil(decision.retry_after_ms / 1000.0)))
+        response = JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Rate limit exceeded",
+                "policy": policy.name,
+                "retry_after_seconds": retry_after_seconds,
+            },
+        )
+        _apply_rate_limit_headers(
+            response=response,
+            limit=policy.capacity,
+            remaining=decision.remaining_tokens,
+            policy_name=policy.name,
+            retry_after_seconds=retry_after_seconds,
+        )
+        return response
+
+    response = await call_next(request)
+    _apply_rate_limit_headers(
+        response=response,
+        limit=policy.capacity,
+        remaining=decision.remaining_tokens,
+        policy_name=policy.name,
+    )
+    if decision.error and settings.rate_limit_fail_open:
+        response.headers["X-RateLimit-Bypass"] = "redis_unavailable"
+    return response
 
 
 @app.on_event("startup")
@@ -112,14 +266,22 @@ def _seed_default_classification_rules(db: Session) -> None:
     if existing_count > 0:
         return
 
-    for item in DEFAULT_CLASSIFICATION_RULES:
+    try:
+        configured_rules = load_rules_config_file()
+    except Exception:  # noqa: BLE001
+        configured_rules = []
+    if not configured_rules:
+        configured_rules = [dict(item, is_active=True) for item in DEFAULT_CLASSIFICATION_RULES]
+        save_rules_config_file(configured_rules)
+
+    for item in configured_rules:
         row = ClassificationRule(
             rule_type=item["rule_type"],
             pattern=item["pattern"],
             category=item["category"],
             confidence=float(item["confidence"]),
             priority=int(item["priority"]),
-            is_active=1,
+            is_active=1 if bool(item.get("is_active", True)) else 0,
         )
         db.add(row)
     db.commit()
@@ -145,13 +307,67 @@ def _normalize_rule_type(value: str) -> str:
     return rule_type
 
 
-def _get_or_create_manual_import(db: Session) -> StatementImport:
-    existing = db.query(StatementImport).filter(StatementImport.status == "manual").first()
+def _ensure_unique_dedupe_fingerprint(base_fingerprint: str, review_id: str, db: Session) -> str:
+    candidate = base_fingerprint
+    attempt = 0
+    while db.execute(
+        select(Transaction.id).where(Transaction.dedupe_fingerprint == candidate)
+    ).scalar_one_or_none() is not None:
+        raw = f"{base_fingerprint}|approved|{review_id}|{attempt}"
+        candidate = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        attempt += 1
+    return candidate
+
+
+def _apply_duplicate_review_action(row: DuplicateReview, action: str, db: Session) -> str | None:
+    if action == "mark_duplicate":
+        db.delete(row)
+        return None
+
+    if action == "not_duplicate":
+        dedupe_fingerprint = _ensure_unique_dedupe_fingerprint(
+            base_fingerprint=row.dedupe_fingerprint,
+            review_id=row.id,
+            db=db,
+        )
+
+        txn = Transaction(
+            user_id=row.user_id,
+            source_import_id=row.source_import_id,
+            transaction_date=row.transaction_date,
+            description_raw=row.description_raw,
+            merchant_normalized=row.merchant_normalized,
+            amount=row.amount,
+            currency=row.currency,
+            direction=row.direction,
+            category=row.category,
+            category_confidence=float(row.category_confidence),
+            dedupe_fingerprint=dedupe_fingerprint,
+        )
+        db.add(txn)
+
+        source_import = db.get(StatementImport, row.source_import_id)
+        if source_import is not None:
+            source_import.processed_rows = (source_import.processed_rows or 0) + 1
+            source_import.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+        db.delete(row)
+        db.flush()
+        return txn.id
+
+    raise ValueError("Unsupported action for duplicate review resolution")
+
+
+def _get_or_create_manual_import(db: Session, user_id: str | None) -> StatementImport:
+    query = db.query(StatementImport).filter(StatementImport.status == "manual")
+    query = _apply_user_scope(query, StatementImport, user_id)
+    existing = query.first()
     if existing is not None:
         return existing
 
     row = StatementImport(
         id=str(uuid.uuid4()),
+        user_id=user_id if settings.clerk_enabled else None,
         filename="manual_entries",
         status="manual",
         total_rows=0,
@@ -274,14 +490,56 @@ def _to_rule_response(row: ClassificationRule) -> ClassificationRuleResponse:
     )
 
 
+def _to_duplicate_review_response(row: DuplicateReview) -> DuplicateReviewResponse:
+    return DuplicateReviewResponse(
+        id=row.id,
+        source_import_id=row.source_import_id,
+        source_row_number=row.source_row_number,
+        duplicate_scope=row.duplicate_scope,
+        duplicate_reason=row.duplicate_reason,
+        matched_transaction_id=row.matched_transaction_id,
+        transaction_date=row.transaction_date,
+        description_raw=row.description_raw,
+        merchant_normalized=row.merchant_normalized,
+        amount=row.amount,
+        currency=row.currency,
+        direction=row.direction,
+        category=row.category,
+        category_confidence=float(row.category_confidence),
+        dedupe_fingerprint=row.dedupe_fingerprint,
+        status=row.status,
+        review_note=row.review_note,
+        created_at=row.created_at,
+        reviewed_at=row.reviewed_at,
+    )
+
+
+def _normalize_duplicate_review_status(value: str) -> str:
+    status = value.strip().lower()
+    if status not in ALLOWED_DUPLICATE_REVIEW_STATUS:
+        raise ValueError(
+            "Unsupported duplicate review status. Allowed values: "
+            + ", ".join(sorted(ALLOWED_DUPLICATE_REVIEW_STATUS))
+        )
+    return status
+
+
 @app.post(f"{settings.api_prefix}/imports", response_model=StatementImportResponse)
-async def create_import(file: UploadFile = File(...), db: Session = Depends(get_db)) -> StatementImportResponse:
+async def create_import(
+    request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)
+) -> StatementImportResponse:
+    user_id = _get_request_user_id(request)
     import_id = str(uuid.uuid4())
     filename = file.filename or f"statement-{import_id}.csv"
     raw_content = await file.read()
     decoded_content = raw_content.decode("utf-8-sig", errors="ignore")
 
-    record = StatementImport(id=import_id, filename=filename, status="queued")
+    record = StatementImport(
+        id=import_id,
+        user_id=user_id if settings.clerk_enabled else None,
+        filename=filename,
+        status="queued",
+    )
     uploaded_file = UploadedFile(import_id=import_id, original_filename=filename, content_text=decoded_content)
     db.add(record)
     db.add(uploaded_file)
@@ -405,17 +663,260 @@ def delete_classification_rule(rule_id: str, db: Session = Depends(get_db)) -> d
     return {"status": "deleted"}
 
 
+@app.post(
+    f"{settings.api_prefix}/classification-rules/config/save",
+    response_model=ClassificationRuleConfigSaveResponse,
+)
+def save_classification_rules_config(db: Session = Depends(get_db)) -> ClassificationRuleConfigSaveResponse:
+    rows = db.query(ClassificationRule).order_by(ClassificationRule.priority.asc(), ClassificationRule.created_at.asc()).all()
+    payload = [
+        {
+            "rule_type": row.rule_type,
+            "pattern": row.pattern,
+            "category": row.category,
+            "confidence": float(row.confidence),
+            "priority": int(row.priority),
+            "is_active": bool(row.is_active),
+        }
+        for row in rows
+    ]
+    path = save_rules_config_file(payload)
+    return ClassificationRuleConfigSaveResponse(path=str(path), exported_rules=len(payload))
+
+
+@app.post(
+    f"{settings.api_prefix}/classification-rules/config/load",
+    response_model=ClassificationRuleConfigLoadResponse,
+)
+def load_classification_rules_config(
+    payload: ClassificationRuleConfigLoadRequest,
+    db: Session = Depends(get_db),
+) -> ClassificationRuleConfigLoadResponse:
+    file_rules = load_rules_config_file()
+    if not file_rules:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No valid rules found in config file. "
+                f"Expected JSON array at {resolve_rules_config_path()}"
+            ),
+        )
+
+    if payload.replace_existing:
+        db.query(ClassificationRule).delete()
+        db.commit()
+
+    loaded_count = 0
+    for item in file_rules:
+        try:
+            normalized_rule_type = _normalize_rule_type(item["rule_type"])
+            normalized_category = _get_or_create_category(item["category"], db)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        row = ClassificationRule(
+            rule_type=normalized_rule_type,
+            pattern=item["pattern"].strip().lower(),
+            category=normalized_category,
+            confidence=float(item["confidence"]),
+            priority=int(item["priority"]),
+            is_active=1 if bool(item.get("is_active", True)) else 0,
+        )
+        db.add(row)
+        loaded_count += 1
+
+    db.commit()
+    return ClassificationRuleConfigLoadResponse(
+        path=str(resolve_rules_config_path()),
+        loaded_rules=loaded_count,
+        replaced_existing=payload.replace_existing,
+    )
+
+
 @app.get(f"{settings.api_prefix}/imports/{{import_id}}", response_model=StatementImportResponse)
-def get_import(import_id: str, db: Session = Depends(get_db)) -> StatementImportResponse:
-    record = db.get(StatementImport, import_id)
+def get_import(import_id: str, request: Request, db: Session = Depends(get_db)) -> StatementImportResponse:
+    user_id = _get_request_user_id(request)
+    query = db.query(StatementImport).filter(StatementImport.id == import_id)
+    query = _apply_user_scope(query, StatementImport, user_id)
+    record = query.one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Import not found")
     record = _sync_import_status(record, db)
     return _to_import_response(record)
 
 
+@app.get(f"{settings.api_prefix}/duplicate-reviews", response_model=list[DuplicateReviewResponse])
+def list_duplicate_reviews(
+    request: Request,
+    import_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[DuplicateReviewResponse]:
+    user_id = _get_request_user_id(request)
+    query = db.query(DuplicateReview)
+    query = _apply_user_scope(query, DuplicateReview, user_id)
+    if import_id:
+        query = query.filter(DuplicateReview.source_import_id == import_id)
+    if status:
+        try:
+            normalized_status = _normalize_duplicate_review_status(status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        query = query.filter(DuplicateReview.status == normalized_status)
+
+    rows = (
+        query.order_by(DuplicateReview.created_at.desc(), DuplicateReview.source_row_number.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [_to_duplicate_review_response(row) for row in rows]
+
+
+@app.patch(f"{settings.api_prefix}/duplicate-reviews/{{review_id}}", response_model=DuplicateReviewResponse)
+def update_duplicate_review(
+    review_id: str,
+    payload: DuplicateReviewUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> DuplicateReviewResponse:
+    user_id = _get_request_user_id(request)
+    row = (
+        _apply_user_scope(db.query(DuplicateReview), DuplicateReview, user_id)
+        .filter(DuplicateReview.id == review_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Duplicate review not found")
+
+    try:
+        row.status = _normalize_duplicate_review_status(payload.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row.review_note = payload.review_note.strip() if payload.review_note else None
+    row.reviewed_at = datetime.now(UTC).replace(tzinfo=None)
+    db.commit()
+    db.refresh(row)
+    return _to_duplicate_review_response(row)
+
+
+@app.post(
+    f"{settings.api_prefix}/duplicate-reviews/{{review_id}}/resolve",
+    response_model=DuplicateReviewResolveResponse,
+)
+def resolve_duplicate_review(
+    review_id: str,
+    payload: DuplicateReviewResolveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> DuplicateReviewResolveResponse:
+    user_id = _get_request_user_id(request)
+    row = (
+        _apply_user_scope(db.query(DuplicateReview), DuplicateReview, user_id)
+        .filter(DuplicateReview.id == review_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Duplicate review not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=409, detail="Duplicate review is not pending")
+
+    action = payload.action.strip().lower()
+    try:
+        created_transaction_id = _apply_duplicate_review_action(row=row, action=action, db=db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.commit()
+    return DuplicateReviewResolveResponse(
+        action=action,
+        status="created_transaction_and_deleted_review" if created_transaction_id else "deleted",
+        deleted_review_id=review_id,
+        created_transaction_id=created_transaction_id,
+    )
+
+
+@app.post(
+    f"{settings.api_prefix}/duplicate-reviews/bulk-resolve",
+    response_model=DuplicateReviewBulkResolveResponse,
+)
+def bulk_resolve_duplicate_reviews(
+    payload: DuplicateReviewBulkResolveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> DuplicateReviewBulkResolveResponse:
+    user_id = _get_request_user_id(request)
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Bulk resolve requires confirm=true")
+
+    review_ids = list(dict.fromkeys(payload.review_ids))
+    requested_count = len(review_ids)
+    if requested_count > BULK_DUPLICATE_REVIEW_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resolve more than {BULK_DUPLICATE_REVIEW_MAX} reviews in one request",
+        )
+    if payload.expected_pending_count != requested_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "expected_pending_count mismatch. "
+                "Refresh queue and retry with currently shown record count."
+            ),
+        )
+
+    action = payload.action.strip().lower()
+    rows = (
+        _apply_user_scope(db.query(DuplicateReview), DuplicateReview, user_id)
+        .filter(DuplicateReview.id.in_(review_ids))
+        .all()
+    )
+    row_by_id = {row.id: row for row in rows}
+
+    processed_count = 0
+    deleted_reviews_count = 0
+    created_transactions_count = 0
+    skipped_missing_count = 0
+    skipped_non_pending_count = 0
+
+    for review_id in review_ids:
+        row = row_by_id.get(review_id)
+        if row is None:
+            skipped_missing_count += 1
+            continue
+        if row.status != "pending":
+            skipped_non_pending_count += 1
+            continue
+
+        try:
+            created_transaction_id = _apply_duplicate_review_action(row=row, action=action, db=db)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        processed_count += 1
+        deleted_reviews_count += 1
+        if created_transaction_id:
+            created_transactions_count += 1
+
+    if processed_count > 0:
+        db.commit()
+
+    return DuplicateReviewBulkResolveResponse(
+        action=action,
+        requested_count=requested_count,
+        processed_count=processed_count,
+        deleted_reviews_count=deleted_reviews_count,
+        created_transactions_count=created_transactions_count,
+        skipped_missing_count=skipped_missing_count,
+        skipped_non_pending_count=skipped_non_pending_count,
+    )
+
+
 @app.get(f"{settings.api_prefix}/transactions", response_model=list[TransactionResponse])
 def list_transactions(
+    request: Request,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     category: str | None = Query(default=None),
@@ -423,7 +924,9 @@ def list_transactions(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> list[TransactionResponse]:
+    user_id = _get_request_user_id(request)
     query = db.query(Transaction)
+    query = _apply_user_scope(query, Transaction, user_id)
     if start_date is not None:
         query = query.filter(Transaction.transaction_date >= start_date)
     if end_date is not None:
@@ -446,13 +949,16 @@ def list_transactions(
 )
 def recategorize_transactions(
     payload: RecategorizeTransactionsRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> RecategorizeTransactionsResponse:
+    user_id = _get_request_user_id(request)
     rules = load_active_rules(db)
     if not rules:
         raise HTTPException(status_code=400, detail="No active classification rules found.")
 
     query = db.query(Transaction)
+    query = _apply_user_scope(query, Transaction, user_id)
     if payload.start_date is not None:
         query = query.filter(Transaction.transaction_date >= payload.start_date)
     if payload.end_date is not None:
@@ -508,14 +1014,15 @@ def recategorize_transactions(
 
 @app.post(f"{settings.api_prefix}/transactions", response_model=TransactionResponse)
 def create_manual_transaction(
-    payload: ManualTransactionCreateRequest, db: Session = Depends(get_db)
+    payload: ManualTransactionCreateRequest, request: Request, db: Session = Depends(get_db)
 ) -> TransactionResponse:
+    user_id = _get_request_user_id(request)
     try:
         normalized_category = _get_or_create_category(payload.category, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    manual_import = _get_or_create_manual_import(db)
+    manual_import = _get_or_create_manual_import(db, user_id)
 
     merchant = (payload.merchant_normalized or "").strip()
     if not merchant:
@@ -526,9 +1033,13 @@ def create_manual_transaction(
         merchant_name=merchant,
         amount=payload.amount,
         direction=payload.direction,
+        user_scope=user_id or "",
     )
     existing = db.execute(
-        select(Transaction.id).where(Transaction.dedupe_fingerprint == dedupe_fingerprint)
+        select(Transaction.id).where(
+            _build_user_condition(Transaction, user_id),
+            Transaction.dedupe_fingerprint == dedupe_fingerprint,
+        )
     ).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(
@@ -541,9 +1052,10 @@ def create_manual_transaction(
 
     natural_key_existing = db.execute(
         select(Transaction.id).where(
+            _build_user_condition(Transaction, user_id),
             Transaction.transaction_date == payload.transaction_date,
             func.lower(Transaction.merchant_normalized) == merchant.lower(),
-            func.round(Transaction.amount, 2) == round(payload.amount, 2),
+            func.round(cast(Transaction.amount, Numeric(18, 2)), 2) == round(payload.amount, 2),
             Transaction.direction == payload.direction,
         )
     ).scalar_one_or_none()
@@ -557,6 +1069,7 @@ def create_manual_transaction(
         )
 
     txn = Transaction(
+        user_id=user_id if settings.clerk_enabled else None,
         source_import_id=manual_import.id,
         transaction_date=payload.transaction_date,
         description_raw=payload.description_raw.strip(),
@@ -581,9 +1094,14 @@ def create_manual_transaction(
 
 @app.patch(f"{settings.api_prefix}/transactions/{{transaction_id}}/category", response_model=TransactionResponse)
 def update_transaction_category(
-    transaction_id: str, payload: CategoryUpdateRequest, db: Session = Depends(get_db)
+    transaction_id: str, payload: CategoryUpdateRequest, request: Request, db: Session = Depends(get_db)
 ) -> TransactionResponse:
-    txn = db.get(Transaction, transaction_id)
+    user_id = _get_request_user_id(request)
+    txn = (
+        _apply_user_scope(db.query(Transaction), Transaction, user_id)
+        .filter(Transaction.id == transaction_id)
+        .one_or_none()
+    )
     if txn is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
@@ -601,11 +1119,14 @@ def update_transaction_category(
 
 @app.get(f"{settings.api_prefix}/analytics/categories", response_model=list[CategorySpend])
 def analytics_by_category(
+    request: Request,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[CategorySpend]:
+    user_id = _get_request_user_id(request)
     query = db.query(Transaction.category, func.sum(Transaction.amount)).filter(Transaction.direction == "debit")
+    query = query.filter(_build_user_condition(Transaction, user_id))
     if start_date is not None:
         query = query.filter(Transaction.transaction_date >= start_date)
     if end_date is not None:
@@ -616,13 +1137,16 @@ def analytics_by_category(
 
 @app.get(f"{settings.api_prefix}/analytics/merchants", response_model=list[MerchantSpend])
 def analytics_by_merchant(
+    request: Request,
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[MerchantSpend]:
+    user_id = _get_request_user_id(request)
     query = db.query(Transaction.merchant_normalized, func.sum(Transaction.amount)).filter(
         Transaction.direction == "debit"
     )
+    query = query.filter(_build_user_condition(Transaction, user_id))
     if start_date is not None:
         query = query.filter(Transaction.transaction_date >= start_date)
     if end_date is not None:
@@ -632,8 +1156,12 @@ def analytics_by_merchant(
 
 
 @app.post(f"{settings.api_prefix}/insights/generate", response_model=InsightReportResponse)
-def generate_insights(payload: InsightGenerateRequest, db: Session = Depends(get_db)) -> InsightReportResponse:
+def generate_insights(
+    payload: InsightGenerateRequest, request: Request, db: Session = Depends(get_db)
+) -> InsightReportResponse:
+    user_id = _get_request_user_id(request)
     query = db.query(Transaction)
+    query = _apply_user_scope(query, Transaction, user_id)
     if payload.start_date is not None:
         query = query.filter(Transaction.transaction_date >= payload.start_date)
     if payload.end_date is not None:
@@ -646,6 +1174,7 @@ def generate_insights(payload: InsightGenerateRequest, db: Session = Depends(get
     insight_payload = build_spend_insight(transactions)
 
     report = InsightReport(
+        user_id=user_id if settings.clerk_enabled else None,
         start_date=payload.start_date,
         end_date=payload.end_date,
         summary=insight_payload["summary"],
@@ -666,8 +1195,13 @@ def generate_insights(payload: InsightGenerateRequest, db: Session = Depends(get
 
 
 @app.get(f"{settings.api_prefix}/insights/{{insight_id}}", response_model=InsightReportResponse)
-def get_insight(insight_id: str, db: Session = Depends(get_db)) -> InsightReportResponse:
-    report = db.get(InsightReport, insight_id)
+def get_insight(insight_id: str, request: Request, db: Session = Depends(get_db)) -> InsightReportResponse:
+    user_id = _get_request_user_id(request)
+    report = (
+        _apply_user_scope(db.query(InsightReport), InsightReport, user_id)
+        .filter(InsightReport.id == insight_id)
+        .one_or_none()
+    )
     if report is None:
         raise HTTPException(status_code=404, detail="Insight report not found")
 

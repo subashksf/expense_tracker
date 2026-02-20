@@ -3,12 +3,12 @@ import io
 from datetime import date, datetime
 
 from dateutil import parser as date_parser
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, cast, func, select
 
 from .classification_engine import classify_with_rules, load_active_rules
 from .db import SessionLocal
 from .dedupe import build_dedupe_fingerprint
-from .models import StatementImport, Transaction, UploadedFile
+from .models import DuplicateReview, StatementImport, Transaction, UploadedFile
 
 
 def _pick_value(row: dict[str, str], candidates: list[str]) -> str:
@@ -48,7 +48,7 @@ def _merchant_from_description(description: str) -> str:
     return cleaned[:100]
 
 
-def _parse_row(row: dict[str, str], classification_rules) -> dict | None:
+def _parse_row(row: dict[str, str], classification_rules, user_scope: str) -> dict | None:
     date_str = _pick_value(row, ["date", "transaction date", "posted date", "posting date"])
     description = _pick_value(row, ["description", "memo", "merchant", "name", "details"])
     source_category = _pick_value(row, ["category", "type", "transaction type"])
@@ -97,6 +97,7 @@ def _parse_row(row: dict[str, str], classification_rules) -> dict | None:
         merchant_name=merchant,
         amount=amount,
         direction=direction,
+        user_scope=user_scope,
     )
 
     return {
@@ -110,6 +111,38 @@ def _parse_row(row: dict[str, str], classification_rules) -> dict | None:
         "category_confidence": confidence,
         "dedupe_fingerprint": fingerprint,
     }
+
+
+def _queue_duplicate_review(
+    session,
+    import_id: str,
+    source_row_number: int,
+    duplicate_scope: str,
+    duplicate_reason: str,
+    parsed_row: dict,
+    user_id: str | None = None,
+    matched_transaction_id: str | None = None,
+) -> None:
+    session.add(
+        DuplicateReview(
+            user_id=user_id,
+            source_import_id=import_id,
+            source_row_number=source_row_number,
+            duplicate_scope=duplicate_scope,
+            duplicate_reason=duplicate_reason,
+            matched_transaction_id=matched_transaction_id,
+            transaction_date=parsed_row["transaction_date"],
+            description_raw=parsed_row["description_raw"],
+            merchant_normalized=parsed_row["merchant_normalized"],
+            amount=parsed_row["amount"],
+            currency=parsed_row["currency"],
+            direction=parsed_row["direction"],
+            category=parsed_row["category"],
+            category_confidence=parsed_row["category_confidence"],
+            dedupe_fingerprint=parsed_row["dedupe_fingerprint"],
+            status="pending",
+        )
+    )
 
 
 def process_import_job(import_id: str) -> None:
@@ -135,21 +168,53 @@ def process_import_job(import_id: str) -> None:
         processed_rows = 0
         seen_fingerprints: set[str] = set()
         classification_rules = load_active_rules(session)
+        user_scope = (record.user_id or "").strip()
+        user_condition = (
+            Transaction.user_id.is_(None)
+            if record.user_id is None
+            else Transaction.user_id == record.user_id
+        )
 
         with io.StringIO(uploaded_file.content_text) as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 total_rows += 1
-                parsed = _parse_row(row=row, classification_rules=classification_rules)
+                parsed = _parse_row(
+                    row=row,
+                    classification_rules=classification_rules,
+                    user_scope=user_scope,
+                )
                 if parsed is None:
                     continue
                 if parsed["dedupe_fingerprint"] in seen_fingerprints:
+                    _queue_duplicate_review(
+                        session=session,
+                        import_id=import_id,
+                        source_row_number=total_rows,
+                        duplicate_scope="same_import",
+                        duplicate_reason="fingerprint_match",
+                        parsed_row=parsed,
+                        user_id=record.user_id,
+                        matched_transaction_id=None,
+                    )
                     continue
 
                 exists_stmt = select(Transaction.id).where(
+                    user_condition,
                     Transaction.dedupe_fingerprint == parsed["dedupe_fingerprint"]
                 )
-                if session.execute(exists_stmt).scalar_one_or_none() is not None:
+                matched_existing_id = session.execute(exists_stmt).scalar_one_or_none()
+                if matched_existing_id is not None:
+                    _queue_duplicate_review(
+                        session=session,
+                        import_id=import_id,
+                        source_row_number=total_rows,
+                        duplicate_scope="existing_data",
+                        duplicate_reason="fingerprint_match",
+                        parsed_row=parsed,
+                        user_id=record.user_id,
+                        matched_transaction_id=matched_existing_id,
+                    )
                     continue
 
                 date_condition = (
@@ -158,16 +223,30 @@ def process_import_job(import_id: str) -> None:
                     else Transaction.transaction_date == parsed["transaction_date"]
                 )
                 natural_key_exists_stmt = select(Transaction.id).where(
+                    user_condition,
                     date_condition,
                     func.lower(Transaction.merchant_normalized)
                     == parsed["merchant_normalized"].strip().lower(),
-                    func.round(Transaction.amount, 2) == round(float(parsed["amount"]), 2),
+                    func.round(cast(Transaction.amount, Numeric(18, 2)), 2)
+                    == round(float(parsed["amount"]), 2),
                     Transaction.direction == parsed["direction"],
                 )
-                if session.execute(natural_key_exists_stmt).scalar_one_or_none() is not None:
+                matched_natural_key_id = session.execute(natural_key_exists_stmt).scalar_one_or_none()
+                if matched_natural_key_id is not None:
+                    _queue_duplicate_review(
+                        session=session,
+                        import_id=import_id,
+                        source_row_number=total_rows,
+                        duplicate_scope="existing_data",
+                        duplicate_reason="natural_key_match",
+                        parsed_row=parsed,
+                        user_id=record.user_id,
+                        matched_transaction_id=matched_natural_key_id,
+                    )
                     continue
 
                 txn = Transaction(
+                    user_id=record.user_id,
                     source_import_id=import_id,
                     transaction_date=parsed["transaction_date"],
                     description_raw=parsed["description_raw"],

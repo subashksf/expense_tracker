@@ -94,6 +94,21 @@ class ClassificationRuleResponse(BaseModel):
     updated_at: datetime
 
 
+class ClassificationRuleConfigSaveResponse(BaseModel):
+    path: str
+    exported_rules: int
+
+
+class ClassificationRuleConfigLoadRequest(BaseModel):
+    replace_existing: bool = True
+
+
+class ClassificationRuleConfigLoadResponse(BaseModel):
+    path: str
+    loaded_rules: int
+    replaced_existing: bool
+
+
 class CategoryResponse(BaseModel):
     id: str
     name: str
@@ -122,3 +137,59 @@ class InsightReportResponse(BaseModel):
     summary: str
     payload: dict
     created_at: datetime
+
+
+class DuplicateReviewResponse(BaseModel):
+    id: str
+    source_import_id: str
+    source_row_number: int
+    duplicate_scope: str
+    duplicate_reason: str
+    matched_transaction_id: str | None
+    transaction_date: date | None
+    description_raw: str
+    merchant_normalized: str
+    amount: float
+    currency: str
+    direction: str
+    category: str
+    category_confidence: float
+    dedupe_fingerprint: str
+    status: str
+    review_note: str | None
+    created_at: datetime
+    reviewed_at: datetime | None
+
+
+class DuplicateReviewUpdateRequest(BaseModel):
+    status: str = Field(min_length=1, max_length=32)
+    review_note: str | None = Field(default=None, max_length=1000)
+
+
+class DuplicateReviewResolveRequest(BaseModel):
+    action: Literal["mark_duplicate", "not_duplicate"]
+    review_note: str | None = Field(default=None, max_length=1000)
+
+
+class DuplicateReviewResolveResponse(BaseModel):
+    action: str
+    status: str
+    deleted_review_id: str
+    created_transaction_id: str | None = None
+
+
+class DuplicateReviewBulkResolveRequest(BaseModel):
+    action: Literal["mark_duplicate", "not_duplicate"]
+    review_ids: list[str] = Field(min_length=1, max_length=500)
+    expected_pending_count: int = Field(ge=1, le=500)
+    confirm: bool = False
+
+
+class DuplicateReviewBulkResolveResponse(BaseModel):
+    action: str
+    requested_count: int
+    processed_count: int
+    deleted_reviews_count: int
+    created_transactions_count: int
+    skipped_missing_count: int
+    skipped_non_pending_count: int
