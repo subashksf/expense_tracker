@@ -257,3 +257,6 @@ Build an application that:
 2. Should income tracking be included in MVP or expense-only?
 3. Is multi-currency support required now?
 4. Do you want monthly budgets and alerting in MVP?
+
+## 18. Backlog Reference
+1. Centralized backlog: `BACKLOG.md`

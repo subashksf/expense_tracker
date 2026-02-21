@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SignInButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
+import { SignInButton, SignUpButton, SignedIn, SignedOut, UserButton, useAuth } from "@clerk/nextjs";
 import {
   createCategory,
   createClassificationRule,
@@ -753,6 +753,9 @@ export default function HomePage() {
             <SignInButton mode="modal">
               <button type="button">Sign In</button>
             </SignInButton>
+            <SignUpButton mode="modal">
+              <button type="button">Sign Up</button>
+            </SignUpButton>
           </div>
         </section>
       </main>

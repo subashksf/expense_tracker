@@ -1,6 +1,8 @@
 .DS_Store
 .env
 backend/.env
+**/.env*
+!**/.env.example
 __pycache__/
 *.pyc
 *.pyo
@@ -9,3 +11,5 @@ __pycache__/
 backend/data/
 frontend/node_modules/
 frontend/.next/
+node_modules/
+**/node_modules/

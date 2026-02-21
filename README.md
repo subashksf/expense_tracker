@@ -101,7 +101,7 @@ This repo now includes the backend MVP scaffold:
 8. Duplicate imports are now queued in `duplicate_reviews` for user review instead of being silently dropped.
 9. Duplicate queue actions: `Mark Duplicate` removes queue item, `Not Duplicate` creates the transaction and removes queue item.
 10. Duplicate queue supports bulk actions on currently shown rows with safeguards (`confirm=true`, explicit IDs, count match, max batch size).
-11. Next step is replacing placeholder insights with an LLM provider adapter.
+11. Tracked backlog items are centralized in `BACKLOG.md`.
 12. Duplicate prevention key is currently: `transaction_date + merchant_name + amount + direction`.
 13. Redis token-bucket rate limiting is enabled by default for `/api/*`.
 14. Default policies:
