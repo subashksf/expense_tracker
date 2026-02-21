@@ -18,10 +18,14 @@ services:
   api:
     build:
       context: ./backend
+    env_file:
+      - ./backend/.env
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://expense_tracker:expense_tracker@postgres:5432/expense_tracker
       REDIS_URL: redis://redis:6379/0
+      CLERK_ENABLED: "true"
+      CLERK_REQUIRE_AUTH: "true"
     ports:
       - "8000:8000"
     depends_on:
@@ -34,10 +38,14 @@ services:
     build:
       context: ./backend
     command: python worker.py
+    env_file:
+      - ./backend/.env
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://expense_tracker:expense_tracker@postgres:5432/expense_tracker
       REDIS_URL: redis://redis:6379/0
+      CLERK_ENABLED: "true"
+      CLERK_REQUIRE_AUTH: "true"
     depends_on:
       - postgres
       - redis

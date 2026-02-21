@@ -104,6 +104,25 @@ rate_limiter = RedisTokenBucketLimiter(settings.redis_url, key_prefix=settings.r
 token_verifier = ClerkTokenVerifier(settings) if settings.clerk_enabled else None
 
 
+def _attach_cors_headers(request: Request, response: Response) -> Response:
+    origin = request.headers.get("origin", "").strip()
+    allowed = cors_origins()
+    allow_all = "*" in allowed
+    if allow_all:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    elif origin and origin in allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
+def _json_api_error(request: Request, status_code: int, detail: str) -> JSONResponse:
+    response = JSONResponse(status_code=status_code, content={"detail": detail})
+    return _attach_cors_headers(request, response)
+
+
 def _get_auth_context(request: Request) -> AuthContext | None:
     if not settings.clerk_enabled:
         return None
@@ -163,15 +182,15 @@ async def enforce_authentication(request: Request, call_next):
     token = extract_bearer_token(request.headers.get("Authorization"))
     if not token:
         if settings.clerk_require_auth:
-            return JSONResponse(status_code=401, content={"detail": "Missing bearer token"})
+            return _json_api_error(request=request, status_code=401, detail="Missing bearer token")
         return await call_next(request)
 
     try:
         if token_verifier is None:
-            return JSONResponse(status_code=503, content={"detail": "Clerk is not configured"})
+            return _json_api_error(request=request, status_code=503, detail="Clerk is not configured")
         request.state.auth_context = token_verifier.verify(token)
     except HTTPException as exc:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return _json_api_error(request=request, status_code=exc.status_code, detail=str(exc.detail))
 
     return await call_next(request)
 
@@ -190,9 +209,10 @@ async def enforce_rate_limit(request: Request, call_next):
     decision = rate_limiter.consume(policy=policy, identity=identity)
 
     if decision.error and not settings.rate_limit_fail_open:
-        return JSONResponse(
+        return _json_api_error(
+            request=request,
             status_code=503,
-            content={"detail": "Rate limiter unavailable. Try again shortly."},
+            detail="Rate limiter unavailable. Try again shortly.",
         )
 
     if not decision.allowed:
@@ -212,7 +232,7 @@ async def enforce_rate_limit(request: Request, call_next):
             policy_name=policy.name,
             retry_after_seconds=retry_after_seconds,
         )
-        return response
+        return _attach_cors_headers(request, response)
 
     response = await call_next(request)
     _apply_rate_limit_headers(
