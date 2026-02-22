@@ -184,6 +184,14 @@
     "is_active": true
   },
   {
+    "rule_type": "merchant_contains",
+    "pattern": "electric",
+    "category": "utilities",
+    "confidence": 0.9,
+    "priority": 20,
+    "is_active": true
+  },
+  {
     "rule_type": "text_contains",
     "pattern": "patel",
     "category": "groceries_indian",

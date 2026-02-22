@@ -14,11 +14,20 @@ def _normalize_database_url(url: str) -> str:
     return url
 
 
+def _build_engine_kwargs(database_url: str) -> dict:
+    kwargs: dict = {"future": True}
+    if database_url.startswith("postgresql+psycopg://"):
+        # Avoid DuplicatePreparedStatement errors under pooled/forked runtime modes.
+        kwargs["connect_args"] = {"prepare_threshold": None}
+    return kwargs
+
+
 class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(_normalize_database_url(settings.database_url), future=True)
+normalized_database_url = _normalize_database_url(settings.database_url)
+engine = create_engine(normalized_database_url, **_build_engine_kwargs(normalized_database_url))
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 
