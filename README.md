@@ -52,9 +52,11 @@ This repo now includes the backend MVP scaffold:
    CLERK_JWKS_URL=<clerk_jwks_url>
    CLERK_ISSUER=<expected_issuer>
    CLERK_AUDIENCE=<optional_audience>
+   ADMIN_USER_IDS=<comma_separated_clerk_user_ids_for_admins>
    ```
 3. With Clerk enabled, API requests must include a valid Clerk bearer token.
 4. Imports, transactions, duplicate reviews, and insight reports are user-scoped by `user_id`.
+5. `categories` and `classification_rules` are global; write operations are admin-only when Clerk is enabled.
 
 ## API Endpoints (MVP)
 1. `POST /api/imports` (multipart file upload with key `file`)
@@ -79,6 +81,8 @@ This repo now includes the backend MVP scaffold:
 20. `PATCH /api/duplicate-reviews/{review_id}`
 21. `POST /api/duplicate-reviews/{review_id}/resolve`
 22. `POST /api/duplicate-reviews/bulk-resolve`
+23. `GET /api/ops/metrics`
+24. `GET /api/ops/alerts`
 
 ## Deploy to Render
 1. Push this repo to GitHub.
@@ -109,6 +113,9 @@ This repo now includes the backend MVP scaffold:
     - `write` (other non-GET API calls): `60/min`
     - `read` (`GET`/`HEAD` API calls): `240/min`
 15. Clerk login is integrated in the frontend (`SignedIn`/`SignedOut` + token forwarding to backend).
+16. API/worker logs are structured JSON logs with request IDs.
+17. Optional Sentry error tracking is supported via `SENTRY_DSN`.
+18. Operational metrics and alert signals are available at `/api/ops/metrics` and `/api/ops/alerts`.
 
 ## Rate Limiting Config
 Set in backend env (see `backend/.env.example`):
@@ -118,6 +125,21 @@ Set in backend env (see `backend/.env.example`):
 4. `RATE_LIMIT_READ_PER_MINUTE`
 5. `RATE_LIMIT_WRITE_PER_MINUTE`
 6. `RATE_LIMIT_STRICT_PER_MINUTE`
+
+## Observability Config
+Set in backend env (see `backend/.env.example`):
+1. `LOG_LEVEL`
+2. `LOG_JSON`
+3. `SENTRY_DSN`
+4. `SENTRY_TRACES_SAMPLE_RATE`
+5. `OPS_METRICS_ENABLED`
+6. `OPS_ALERT_QUEUE_DEPTH_THRESHOLD`
+7. `OPS_ALERT_FAILED_IMPORTS_THRESHOLD_24H`
+8. `OPS_ALERT_STALE_PROCESSING_THRESHOLD`
+
+## Admin Config
+Set in backend env (see `backend/.env.example`):
+1. `ADMIN_USER_IDS` (comma-separated Clerk user IDs allowed to manage global categories/rules)
 
 ## Import Troubleshooting
 1. Check latest imports:

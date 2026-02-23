@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from datetime import date, datetime
 
 from dateutil import parser as date_parser
@@ -9,6 +10,8 @@ from .classification_engine import classify_with_rules, load_active_rules
 from .db import SessionLocal
 from .dedupe import build_dedupe_fingerprint
 from .models import DuplicateReview, StatementImport, Transaction, UploadedFile
+
+logger = logging.getLogger("expense_tracker.worker.imports")
 
 
 def _pick_value(row: dict[str, str], candidates: list[str]) -> str:
@@ -151,6 +154,14 @@ def process_import_job(import_id: str) -> None:
         record = session.get(StatementImport, import_id)
         if record is None:
             return
+        logger.info(
+            "import_job_started",
+            extra={
+                "import_id": import_id,
+                "filename": record.filename,
+                "user_id": record.user_id,
+            },
+        )
 
         record.status = "processing"
         record.error_message = None
@@ -272,7 +283,23 @@ def process_import_job(import_id: str) -> None:
         record.processed_rows = processed_rows
         record.finished_at = datetime.utcnow()
         session.commit()
+        logger.info(
+            "import_job_completed",
+            extra={
+                "import_id": import_id,
+                "filename": record.filename,
+                "user_id": record.user_id,
+                "total_rows": total_rows,
+                "processed_rows": processed_rows,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "import_job_failed",
+            extra={
+                "import_id": import_id,
+            },
+        )
         # Roll back first so session can safely query/update the import record.
         session.rollback()
         try:

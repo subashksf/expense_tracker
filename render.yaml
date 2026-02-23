@@ -27,6 +27,24 @@ services:
         sync: false
       - key: CLERK_AUDIENCE
         sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.0"
+      - key: OPS_METRICS_ENABLED
+        value: "true"
+      - key: OPS_ALERT_QUEUE_DEPTH_THRESHOLD
+        value: "100"
+      - key: OPS_ALERT_FAILED_IMPORTS_THRESHOLD_24H
+        value: "5"
+      - key: OPS_ALERT_STALE_PROCESSING_THRESHOLD
+        value: "3"
       - key: OPENAI_API_KEY
         sync: false
 
@@ -48,6 +66,14 @@ services:
           type: keyvalue
           name: expense-tracker-kv
           property: connectionString
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: "true"
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.0"
       - key: OPENAI_API_KEY
         sync: false
 

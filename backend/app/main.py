@@ -1,5 +1,6 @@
 import json
 import hashlib
+import logging
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -27,7 +28,8 @@ from .models import (
     Transaction,
     UploadedFile,
 )
-from .queue import enqueue_import, read_job_state
+from .observability import configure_logging, init_sentry, monotonic_ms, utc_now_iso
+from .queue import enqueue_import, read_job_state, read_queue_metrics
 from .rate_limit import (
     RedisTokenBucketLimiter,
     pick_rate_limit_policy,
@@ -91,6 +93,11 @@ ALLOWED_RULE_TYPES = {
 ALLOWED_DUPLICATE_REVIEW_STATUS = {"pending", "confirmed_duplicate", "ignored"}
 BULK_DUPLICATE_REVIEW_MAX = 500
 
+configure_logging("expense_tracker.api")
+init_sentry("expense_tracker.api")
+logger = logging.getLogger("expense_tracker.api")
+ADMIN_USER_IDS = {value.strip() for value in settings.admin_user_ids.split(",") if value.strip()}
+
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -120,7 +127,15 @@ def _attach_cors_headers(request: Request, response: Response) -> Response:
 
 def _json_api_error(request: Request, status_code: int, detail: str) -> JSONResponse:
     response = JSONResponse(status_code=status_code, content={"detail": detail})
+    request_id = getattr(request.state, "request_id", None)
+    if request_id:
+        response.headers["X-Request-Id"] = request_id
     return _attach_cors_headers(request, response)
+
+
+def _get_request_id(request: Request) -> str:
+    incoming = request.headers.get("x-request-id", "").strip()
+    return incoming or str(uuid.uuid4())
 
 
 def _get_auth_context(request: Request) -> AuthContext | None:
@@ -137,6 +152,20 @@ def _get_auth_context(request: Request) -> AuthContext | None:
 def _get_request_user_id(request: Request) -> str | None:
     context = _get_auth_context(request)
     return context.user_id if context else None
+
+
+def _require_admin(request: Request) -> str | None:
+    user_id = _get_request_user_id(request)
+    if not settings.clerk_enabled:
+        return user_id
+    if not ADMIN_USER_IDS:
+        raise HTTPException(
+            status_code=503,
+            detail="No admin users configured. Set ADMIN_USER_IDS in backend environment.",
+        )
+    if user_id not in ADMIN_USER_IDS:
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return user_id
 
 
 def _apply_user_scope(query, model, user_id: str | None):
@@ -167,6 +196,43 @@ def _apply_rate_limit_headers(
     response.headers["X-RateLimit-Policy"] = policy_name
     if retry_after_seconds is not None:
         response.headers["Retry-After"] = str(max(1, retry_after_seconds))
+
+
+@app.middleware("http")
+async def observe_http_request(request: Request, call_next):
+    request_id = _get_request_id(request)
+    request.state.request_id = request_id
+    started_ms = monotonic_ms()
+    try:
+        response = await call_next(request)
+    except Exception:  # noqa: BLE001
+        duration_ms = round(monotonic_ms() - started_ms, 2)
+        logger.exception(
+            "request_unhandled_exception",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+
+    duration_ms = round(monotonic_ms() - started_ms, 2)
+    response.headers["X-Request-Id"] = request_id
+    user_id = getattr(getattr(request.state, "auth_context", None), "user_id", None)
+    logger.info(
+        "request_complete",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+            "user_id": user_id,
+        },
+    )
+    return response
 
 
 @app.middleware("http")
@@ -253,6 +319,16 @@ def on_startup() -> None:
     with SessionLocal() as session:
         _seed_default_categories(session)
         _seed_default_classification_rules(session)
+    logger.info(
+        "api_startup_complete",
+        extra={
+            "app_env": settings.app_env,
+            "rate_limit_enabled": settings.rate_limit_enabled,
+            "clerk_enabled": settings.clerk_enabled,
+            "admin_user_count": len(ADMIN_USER_IDS),
+            "ops_metrics_enabled": settings.ops_metrics_enabled,
+        },
+    )
 
 
 def _mark_failed(record: StatementImport, db: Session, reason: str) -> None:
@@ -307,14 +383,16 @@ def _seed_default_classification_rules(db: Session) -> None:
     db.commit()
 
 
-def _get_or_create_category(name: str, db: Session) -> str:
+def _resolve_category(name: str, db: Session, create_if_missing: bool = False) -> str:
     normalized = _normalize_category_name(name)
     found = db.query(Category).filter(Category.name == normalized).one_or_none()
     if found is not None:
         return found.name
-    db.add(Category(name=normalized))
-    db.flush()
-    return normalized
+    if create_if_missing:
+        db.add(Category(name=normalized))
+        db.flush()
+        return normalized
+    raise ValueError(f"Category '{normalized}' does not exist")
 
 
 def _normalize_rule_type(value: str) -> str:
@@ -544,6 +622,117 @@ def _normalize_duplicate_review_status(value: str) -> str:
     return status
 
 
+def _build_ops_snapshot(db: Session) -> dict:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    since_24h = now - timedelta(hours=24)
+    stale_cutoff = now - timedelta(minutes=max(1, settings.import_stale_minutes))
+
+    queue_metrics = read_queue_metrics("imports")
+    failed_imports_24h = (
+        db.query(func.count(StatementImport.id))
+        .filter(
+            StatementImport.status == "failed",
+            StatementImport.updated_at >= since_24h,
+        )
+        .scalar()
+        or 0
+    )
+    stale_processing_imports = (
+        db.query(func.count(StatementImport.id))
+        .filter(
+            StatementImport.status == "processing",
+            StatementImport.updated_at < stale_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+    pending_duplicate_reviews = (
+        db.query(func.count(DuplicateReview.id))
+        .filter(DuplicateReview.status == "pending")
+        .scalar()
+        or 0
+    )
+
+    alerts: list[dict] = []
+    if queue_metrics is None:
+        alerts.append(
+            {
+                "severity": "critical",
+                "code": "queue_unavailable",
+                "message": "Queue metrics unavailable. Redis/RQ may be down.",
+            }
+        )
+    else:
+        if queue_metrics.queued >= settings.ops_alert_queue_depth_threshold:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "code": "queue_depth_high",
+                    "message": "Import queue depth exceeded threshold.",
+                    "observed_value": queue_metrics.queued,
+                    "threshold": settings.ops_alert_queue_depth_threshold,
+                }
+            )
+        if queue_metrics.failed > 0:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "code": "queue_failed_jobs_present",
+                    "message": "Failed jobs exist in RQ registry.",
+                    "observed_value": queue_metrics.failed,
+                    "threshold": 0,
+                }
+            )
+
+    if failed_imports_24h >= settings.ops_alert_failed_imports_threshold_24h:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "failed_imports_24h_high",
+                "message": "Import failures in the last 24h exceeded threshold.",
+                "observed_value": failed_imports_24h,
+                "threshold": settings.ops_alert_failed_imports_threshold_24h,
+            }
+        )
+    if stale_processing_imports >= settings.ops_alert_stale_processing_threshold:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "stale_processing_imports_high",
+                "message": "Stale processing imports exceeded threshold.",
+                "observed_value": stale_processing_imports,
+                "threshold": settings.ops_alert_stale_processing_threshold,
+            }
+        )
+
+    return {
+        "generated_at": utc_now_iso(),
+        "queue": (
+            {
+                "name": queue_metrics.queue_name,
+                "queued": queue_metrics.queued,
+                "started": queue_metrics.started,
+                "deferred": queue_metrics.deferred,
+                "scheduled": queue_metrics.scheduled,
+                "failed": queue_metrics.failed,
+                "finished": queue_metrics.finished,
+                "workers_total": queue_metrics.workers_total,
+                "workers_busy": queue_metrics.workers_busy,
+            }
+            if queue_metrics
+            else None
+        ),
+        "imports": {
+            "failed_24h": int(failed_imports_24h),
+            "stale_processing": int(stale_processing_imports),
+        },
+        "duplicate_reviews": {
+            "pending": int(pending_duplicate_reviews),
+        },
+        "alerts": alerts,
+    }
+
+
 @app.post(f"{settings.api_prefix}/imports", response_model=StatementImportResponse)
 async def create_import(
     request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)
@@ -582,7 +771,8 @@ def list_categories(db: Session = Depends(get_db)) -> list[CategoryResponse]:
 
 
 @app.post(f"{settings.api_prefix}/categories", response_model=CategoryResponse)
-def create_category(payload: CategoryCreateRequest, db: Session = Depends(get_db)) -> CategoryResponse:
+def create_category(payload: CategoryCreateRequest, request: Request, db: Session = Depends(get_db)) -> CategoryResponse:
+    _require_admin(request)
     try:
         normalized = _normalize_category_name(payload.name)
     except ValueError as exc:
@@ -621,11 +811,12 @@ def list_classification_rules(
 
 @app.post(f"{settings.api_prefix}/classification-rules", response_model=ClassificationRuleResponse)
 def create_classification_rule(
-    payload: ClassificationRuleCreateRequest, db: Session = Depends(get_db)
+    payload: ClassificationRuleCreateRequest, request: Request, db: Session = Depends(get_db)
 ) -> ClassificationRuleResponse:
+    _require_admin(request)
     try:
         normalized_rule_type = _normalize_rule_type(payload.rule_type)
-        normalized_category = _get_or_create_category(payload.category, db)
+        normalized_category = _resolve_category(payload.category, db, create_if_missing=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -645,8 +836,9 @@ def create_classification_rule(
 
 @app.patch(f"{settings.api_prefix}/classification-rules/{{rule_id}}", response_model=ClassificationRuleResponse)
 def update_classification_rule(
-    rule_id: str, payload: ClassificationRuleUpdateRequest, db: Session = Depends(get_db)
+    rule_id: str, payload: ClassificationRuleUpdateRequest, request: Request, db: Session = Depends(get_db)
 ) -> ClassificationRuleResponse:
+    _require_admin(request)
     row = db.get(ClassificationRule, rule_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Classification rule not found")
@@ -657,7 +849,7 @@ def update_classification_rule(
         if payload.pattern is not None:
             row.pattern = payload.pattern.strip().lower()
         if payload.category is not None:
-            row.category = _get_or_create_category(payload.category, db)
+            row.category = _resolve_category(payload.category, db, create_if_missing=True)
         if payload.confidence is not None:
             row.confidence = float(payload.confidence)
         if payload.priority is not None:
@@ -673,7 +865,8 @@ def update_classification_rule(
 
 
 @app.delete(f"{settings.api_prefix}/classification-rules/{{rule_id}}")
-def delete_classification_rule(rule_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
+def delete_classification_rule(rule_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    _require_admin(request)
     row = db.get(ClassificationRule, rule_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Classification rule not found")
@@ -687,8 +880,15 @@ def delete_classification_rule(rule_id: str, db: Session = Depends(get_db)) -> d
     f"{settings.api_prefix}/classification-rules/config/save",
     response_model=ClassificationRuleConfigSaveResponse,
 )
-def save_classification_rules_config(db: Session = Depends(get_db)) -> ClassificationRuleConfigSaveResponse:
-    rows = db.query(ClassificationRule).order_by(ClassificationRule.priority.asc(), ClassificationRule.created_at.asc()).all()
+def save_classification_rules_config(
+    request: Request, db: Session = Depends(get_db)
+) -> ClassificationRuleConfigSaveResponse:
+    _require_admin(request)
+    rows = (
+        db.query(ClassificationRule)
+        .order_by(ClassificationRule.priority.asc(), ClassificationRule.created_at.asc())
+        .all()
+    )
     payload = [
         {
             "rule_type": row.rule_type,
@@ -710,8 +910,10 @@ def save_classification_rules_config(db: Session = Depends(get_db)) -> Classific
 )
 def load_classification_rules_config(
     payload: ClassificationRuleConfigLoadRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ClassificationRuleConfigLoadResponse:
+    _require_admin(request)
     file_rules = load_rules_config_file()
     if not file_rules:
         raise HTTPException(
@@ -730,7 +932,7 @@ def load_classification_rules_config(
     for item in file_rules:
         try:
             normalized_rule_type = _normalize_rule_type(item["rule_type"])
-            normalized_category = _get_or_create_category(item["category"], db)
+            normalized_category = _resolve_category(item["category"], db, create_if_missing=True)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1038,7 +1240,7 @@ def create_manual_transaction(
 ) -> TransactionResponse:
     user_id = _get_request_user_id(request)
     try:
-        normalized_category = _get_or_create_category(payload.category, db)
+        normalized_category = _resolve_category(payload.category, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1126,7 +1328,7 @@ def update_transaction_category(
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     try:
-        normalized = _get_or_create_category(payload.category, db)
+        normalized = _resolve_category(payload.category, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1233,6 +1435,39 @@ def get_insight(insight_id: str, request: Request, db: Session = Depends(get_db)
         payload=json.loads(report.payload_json),
         created_at=report.created_at,
     )
+
+
+@app.get(f"{settings.api_prefix}/ops/metrics")
+def get_ops_metrics(request: Request, db: Session = Depends(get_db)) -> dict:
+    if not settings.ops_metrics_enabled:
+        raise HTTPException(status_code=404, detail="Ops metrics are disabled")
+    _ = _get_request_user_id(request)
+    snapshot = _build_ops_snapshot(db)
+    alerts = snapshot.get("alerts", [])
+    if alerts:
+        logger.warning(
+            "ops_alerts_triggered",
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "alert_count": len(alerts),
+                "alert_codes": [item.get("code") for item in alerts],
+            },
+        )
+    return snapshot
+
+
+@app.get(f"{settings.api_prefix}/ops/alerts")
+def get_ops_alerts(request: Request, db: Session = Depends(get_db)) -> dict:
+    if not settings.ops_metrics_enabled:
+        raise HTTPException(status_code=404, detail="Ops metrics are disabled")
+    _ = _get_request_user_id(request)
+    snapshot = _build_ops_snapshot(db)
+    alerts = snapshot.get("alerts", [])
+    return {
+        "generated_at": snapshot["generated_at"],
+        "count": len(alerts),
+        "alerts": alerts,
+    }
 
 
 @app.get("/healthz")

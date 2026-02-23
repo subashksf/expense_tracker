@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
@@ -22,9 +27,18 @@ class Settings(BaseSettings):
     clerk_jwks_url: str = ""
     clerk_issuer: str = ""
     clerk_audience: str = ""
+    admin_user_ids: str = ""
+    log_level: str = "INFO"
+    log_json: bool = True
+    sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.0
+    ops_metrics_enabled: bool = True
+    ops_alert_queue_depth_threshold: int = 100
+    ops_alert_failed_imports_threshold_24h: int = 5
+    ops_alert_stale_processing_threshold: int = 3
     openai_api_key: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
 
 settings = Settings()

@@ -1,5 +1,357 @@
 [
   {
+    "rule_type": "text_contains",
+    "pattern": "patel",
+    "category": "groceries_indian",
+    "confidence": 0.92,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "hareli",
+    "category": "groceries_indian",
+    "confidence": 0.92,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "whole foods",
+    "category": "groceries_other",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "h-e-b",
+    "category": "groceries_other",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "costco",
+    "category": "groceries_other",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "target",
+    "category": "groceries_other",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "walmart",
+    "category": "groceries_other",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "restaurant",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "doordash",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "ubereats",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "grubhub",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "cafe",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "starbucks",
+    "category": "eating_out",
+    "confidence": 0.88,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "amazon",
+    "category": "merchandise_shopping",
+    "confidence": 0.87,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "macy",
+    "category": "merchandise_shopping",
+    "confidence": 0.87,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "nike",
+    "category": "merchandise_shopping",
+    "confidence": 0.87,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "netflix",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "peloton",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "youtube",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "prime",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "icloud",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "apple",
+    "category": "subscriptions",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "hotel",
+    "category": "travel",
+    "confidence": 0.83,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "hyatt",
+    "category": "travel",
+    "confidence": 0.83,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "hilton",
+    "category": "travel",
+    "confidence": 0.83,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "airbnb",
+    "category": "travel",
+    "confidence": 0.83,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "uber trip",
+    "category": "travel",
+    "confidence": 0.83,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "gas",
+    "category": "transportation",
+    "confidence": 0.84,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "att",
+    "category": "utilities",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "verizon",
+    "category": "utilities",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "frisco west",
+    "category": "utilities",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "tiger rock",
+    "category": "akira_classes",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "texas ford aquatics",
+    "category": "akira_classes",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "aops",
+    "category": "akira_classes",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "day care",
+    "category": "aarav_classes",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "ntta",
+    "category": "transportation",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "spothero",
+    "category": "transportation",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "autopay",
+    "category": "payments_credit",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "merchant_contains",
+    "pattern": "desi district",
+    "category": "eating_out",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "merchant_contains",
+    "pattern": "chick-fil-a",
+    "category": "eating_out",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "automatic payment",
+    "category": "payments_credit",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "text_contains",
+    "pattern": "asian halal",
+    "category": "groceries_indian",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "merchant_contains",
+    "pattern": "electric",
+    "category": "utilities",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
+    "rule_type": "merchant_contains",
+    "pattern": "annual membership fee",
+    "category": "card_membership",
+    "confidence": 0.9,
+    "priority": 5,
+    "is_active": true
+  },
+  {
     "rule_type": "source_category_contains",
     "pattern": "merchandise",
     "category": "merchandise_shopping",
@@ -96,275 +448,27 @@
     "is_active": true
   },
   {
-    "rule_type": "text_contains",
-    "pattern": "tiger rock",
-    "category": "akira_classes",
+    "rule_type": "merchant_contains",
+    "pattern": "walmart",
+    "category": "groceries_other",
     "confidence": 0.9,
     "priority": 20,
     "is_active": true
   },
   {
-    "rule_type": "text_contains",
-    "pattern": "texas ford aquatics",
-    "category": "akira_classes",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "aops",
-    "category": "akira_classes",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "day care",
+    "rule_type": "merchant_contains",
+    "pattern": "debbie",
     "category": "aarav_classes",
     "confidence": 0.9,
     "priority": 20,
     "is_active": true
   },
   {
-    "rule_type": "text_contains",
-    "pattern": "ntta",
-    "category": "transportation",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "spothero",
-    "category": "transportation",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "autopay",
-    "category": "payments_credit",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
     "rule_type": "merchant_contains",
-    "pattern": "desi district",
-    "category": "eating_out",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "merchant_contains",
-    "pattern": "chick-fil-a",
-    "category": "eating_out",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "automatic payment",
-    "category": "payments_credit",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "asian halal",
-    "category": "groceries_indian",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "merchant_contains",
-    "pattern": "electric",
-    "category": "utilities",
-    "confidence": 0.9,
-    "priority": 20,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "patel",
-    "category": "groceries_indian",
-    "confidence": 0.92,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "hareli",
-    "category": "groceries_indian",
-    "confidence": 0.92,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "whole foods",
-    "category": "groceries_other",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "h-e-b",
-    "category": "groceries_other",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "costco",
-    "category": "groceries_other",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "target",
-    "category": "groceries_other",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "walmart grocery",
-    "category": "groceries_other",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "restaurant",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "doordash",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "ubereats",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "grubhub",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "cafe",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "starbucks",
-    "category": "eating_out",
-    "confidence": 0.88,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "amazon",
+    "pattern": "hobby lobby",
     "category": "merchandise_shopping",
-    "confidence": 0.87,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "macy",
-    "category": "merchandise_shopping",
-    "confidence": 0.87,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "nike",
-    "category": "merchandise_shopping",
-    "confidence": 0.87,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "netflix",
-    "category": "subscriptions",
     "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "peloton",
-    "category": "subscriptions",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "youtube",
-    "category": "subscriptions",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "prime",
-    "category": "subscriptions",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "icloud",
-    "category": "subscriptions",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "apple",
-    "category": "subscriptions",
-    "confidence": 0.9,
-    "priority": 50,
+    "priority": 20,
     "is_active": true
   },
   {
@@ -372,78 +476,6 @@
     "pattern": "airlines",
     "category": "travel",
     "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "hotel",
-    "category": "travel",
-    "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "hyatt",
-    "category": "travel",
-    "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "hilton",
-    "category": "travel",
-    "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "airbnb",
-    "category": "travel",
-    "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "uber trip",
-    "category": "travel",
-    "confidence": 0.83,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "gas",
-    "category": "transportation",
-    "confidence": 0.84,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "att",
-    "category": "utilities",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "verizon",
-    "category": "utilities",
-    "confidence": 0.9,
-    "priority": 50,
-    "is_active": true
-  },
-  {
-    "rule_type": "text_contains",
-    "pattern": "frisco west",
-    "category": "utilities",
-    "confidence": 0.9,
     "priority": 50,
     "is_active": true
   },
